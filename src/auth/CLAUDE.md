@@ -27,3 +27,14 @@ Role is stored in `users.role` and embedded in the JWT via a Supabase Auth hook.
 - Using `.auth.admin` methods from the frontend — server-side only
 - Forgetting to check `semester_id` when checking role — a user may be active in one semester but not another
 - Caching auth state without invalidating on role change
+
+## Critical: always use explicit public schema prefix in functions
+When writing any Postgres function that references your tables, always prefix
+with `public.` explicitly — e.g. `public.profiles`, `public.user_role`.
+Functions running as `security definer` default to the auth schema context
+and will fail silently if schema is not specified.
+
+Always add `set search_path = public` to security definer functions:
+create or replace function public.your_function()
+...
+$$ language plpgsql security definer set search_path = public;
