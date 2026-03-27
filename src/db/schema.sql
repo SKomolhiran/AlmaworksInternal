@@ -67,24 +67,28 @@ create policy "admins can manage semesters"
 create table profiles (
   id           uuid primary key references auth.users(id) on delete cascade,
   email        text not null,
-  role         user_role not null,
+  full_name    text,
+  role         user_role,
+  status       text not null default 'pending' check (status in ('pending', 'approved', 'rejected')),
   semester_id  uuid references semesters(id),
   created_at   timestamptz not null default now(),
   updated_at   timestamptz not null default now()
 );
 
+-- On first sign-in via OAuth, create a pending profile.
+-- Admin must set role and approve before the user can access the platform.
 create or replace function public.handle_new_user()
 returns trigger as $$
 begin
-  insert into public.profiles (id, email, role)
+  insert into public.profiles (id, email, full_name, status)
   values (
     new.id,
     new.email,
-    case
-      when new.raw_user_meta_data->>'role' = 'mentor' then 'mentor'::public.user_role
-      when new.raw_user_meta_data->>'role' = 'admin' then 'admin'::public.user_role
-      else 'startup'::public.user_role
-    end
+    coalesce(
+      new.raw_user_meta_data->>'full_name',
+      new.raw_user_meta_data->>'name'
+    ),
+    'pending'
   );
   return new;
 end;
@@ -108,17 +112,19 @@ create policy "users can insert own profile"
   on profiles for insert
   with check (auth.uid() = id);
 
+-- SECURITY DEFINER function to avoid infinite recursion in profiles RLS
+create or replace function public.get_my_role()
+returns user_role language sql security definer set search_path = public as $$
+  select role from profiles where id = auth.uid();
+$$;
+
 create policy "admins can view all profiles"
   on profiles for select
-  using (
-    (select role from public.profiles where id = auth.uid()) = 'admin'
-  );
+  using (public.get_my_role() = 'admin');
 
 create policy "admins can update all profiles"
   on profiles for update
-  using (
-    (select role from public.profiles where id = auth.uid()) = 'admin'
-  );
+  using (public.get_my_role() = 'admin');
 
 
 -- ============================================================
@@ -187,6 +193,7 @@ create table startups (
   logo_url             text,
   website              text,
   founder_name         text,
+  founders             jsonb not null default '[]',
   mentor_preferences   text,
   preferred_tags       text[] not null default '{}',
   semester_goals       text[] not null default '{}',

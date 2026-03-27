@@ -153,7 +153,7 @@ export default function SessionsPage() {
       {loading ? (
         <div className="text-gray-600">Loading sessions...</div>
       ) : sessions.length === 0 ? (
-        <div className="text-gray-600">No sessions yet. Click "Generate Program Sessions" to create sessions.</div>
+        <div className="text-gray-600">No sessions yet. Click &quot;Generate Program Sessions&quot; to create sessions.</div>
       ) : (
         <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
           <table className="min-w-full divide-y divide-gray-200">
