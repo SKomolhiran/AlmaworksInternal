@@ -3,13 +3,25 @@
 import { createClient } from '@/utils/supabase/client'
 import Image from 'next/image'
 import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
 import { useState } from 'react'
 
 export default function SignInPage() {
   const supabase = createClient()
+  const searchParams = useSearchParams()
+
+  const errorParam = searchParams.get('error')
+  const initialError =
+    errorParam === 'link_expired'
+      ? 'Your sign-in link expired or was opened on a different device. Please request a new one.'
+      : errorParam === 'no_session'
+      ? 'Sign-in failed. Please request a new magic link.'
+      : errorParam === 'account_inactive'
+      ? 'Your account has been deactivated. Contact an Almaworks admin to restore access.'
+      : null
 
   const [email, setEmail] = useState('')
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(initialError)
   const [message, setMessage] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 

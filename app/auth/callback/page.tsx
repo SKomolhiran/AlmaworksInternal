@@ -4,32 +4,20 @@ import { useEffect } from 'react'
 import { createClient } from '@/utils/supabase/client'
 
 export default function AuthCallbackPage() {
-  const supabase = createClient()
-
   useEffect(() => {
-    async function run() {
-      const code = new URLSearchParams(window.location.search).get('code')
+    const supabase = createClient()
 
-      if (code) {
-        const { data: { session }, error } = await supabase.auth.exchangeCodeForSession(code)
-        if (error || !session) {
-          console.error('Auth callback error:', error?.message)
-          window.location.href = '/pending'
-          return
-        }
-      }
-
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session) {
-        window.location.href = '/pending'
-        return
-      }
-
+    async function redirectBasedOnProfile(userId: string) {
       const { data: profile } = await supabase
         .from('profiles')
-        .select('role, status')
-        .eq('id', session.user.id)
+        .select('role, status, is_active')
+        .eq('id', userId)
         .single()
+
+      if (profile?.is_active === false) {
+        window.location.href = '/?error=account_inactive'
+        return
+      }
 
       if (profile?.status === 'approved' && profile.role) {
         const dest =
@@ -42,8 +30,49 @@ export default function AuthCallbackPage() {
       }
     }
 
-    run()
-  }, [supabase])
+    const params = new URLSearchParams(window.location.search)
+
+    // Supabase redirects here with ?error=... when the link is invalid or expired
+    if (params.get('error')) {
+      const code = params.get('error_code')
+      window.location.href = code === 'otp_expired' ? '/?error=link_expired' : '/?error=no_session'
+      return
+    }
+
+    const code = params.get('code')
+
+    if (code) {
+      // PKCE flow — exchange the one-time code for a session
+      supabase.auth.exchangeCodeForSession(code).then(async ({ data: { session }, error }) => {
+        if (error || !session) {
+          window.location.href = '/?error=link_expired'
+          return
+        }
+        await redirectBasedOnProfile(session.user.id)
+      })
+      return
+    }
+
+    // Implicit flow — tokens arrive in the URL hash (#access_token=...).
+    // The browser client processes the hash asynchronously, so getSession()
+    // called immediately returns null. onAuthStateChange fires only after
+    // processing is complete, making it the reliable way to wait for the session.
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        if (event === 'SIGNED_IN' && session) {
+          subscription.unsubscribe()
+          await redirectBasedOnProfile(session.user.id)
+        } else if (event === 'INITIAL_SESSION' && session) {
+          // Already signed in (e.g. page refreshed while logged in)
+          subscription.unsubscribe()
+          await redirectBasedOnProfile(session.user.id)
+        }
+        // INITIAL_SESSION with null session → still processing hash, wait for SIGNED_IN
+      },
+    )
+
+    return () => subscription.unsubscribe()
+  }, [])
 
   return (
     <div className="min-h-screen bg-[#002147] flex items-center justify-center">

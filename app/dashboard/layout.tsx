@@ -26,9 +26,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       if (!user) return
       const { data } = await supabase
         .from('profiles')
-        .select('full_name, email, role')
+        .select('full_name, email, role, is_active')
         .eq('id', user.id)
         .single()
+      if ((data as typeof data & { is_active?: boolean })?.is_active === false) {
+        await supabase.auth.signOut()
+        window.location.href = '/?error=account_inactive'
+        return
+      }
       setProfile(data)
     })
   }, [supabase])
@@ -47,6 +52,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           { href: '/dashboard/admin/outreach', label: 'Outreach' },
           { href: '/dashboard/admin/mentors', label: 'Mentors' },
           { href: '/dashboard/admin/import', label: 'Import' },
+          { href: '/dashboard/admin/notify', label: 'Notify' },
         ]
       : effectiveRole === 'mentor'
       ? [
