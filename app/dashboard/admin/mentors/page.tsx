@@ -21,6 +21,8 @@ type MentorRow = {
   general_availability: string | null
   preferred_format: string | null
   opening_talk: string | null
+  semester_id: string | null
+  semester_name: string | null
 }
 
 export default function AdminMentorsPage() {
@@ -50,28 +52,39 @@ export default function AdminMentorsPage() {
   // Search / filter / sort
   const [search, setSearch] = useState('')
   const [activeFilter, setActiveFilter] = useState<'all' | 'active' | 'inactive'>('all')
-  const [sortKey, setSortKey] = useState<'full_name' | 'company' | 'is_active'>('full_name')
+  const [sortKey, setSortKey] = useState<'full_name' | 'company' | 'is_active' | 'semester_name'>('full_name')
   const [sortDir, setSortDir] = useState<SortDir>('asc')
 
   // Inline edit
   const [editingId, setEditingId] = useState<string | null>(null)
   const [draft, setDraft] = useState<Partial<MentorRow>>({})
   const [savingId, setSavingId] = useState<string | null>(null)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [togglingId, setTogglingId] = useState<string | null>(null)
+
+  // Clipboard copy feedback
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+  function copyToClipboard(text: string, id: string) {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedId(id)
+      setTimeout(() => setCopiedId(null), 1500)
+    })
+  }
 
   async function load() {
     setLoading(true)
     const { data: sem } = await supabase.from('semesters').select('id, name').eq('is_active', true).maybeSingle()
     setActiveSemesterId((sem as { id: string; name: string } | null)?.id ?? null)
     setActiveSemesterName((sem as { id: string; name: string } | null)?.name ?? null)
-    const semId = (sem as { id: string } | null)?.id
-    if (!semId) { setRows([]); setLoading(false); return }
     const { data } = await supabase
       .from('mentors')
-      .select('id, full_name, company, role_title, linkedin_url, expertise_tags, bio, is_active, slug, email, general_availability, preferred_format, opening_talk')
-      .eq('semester_id', semId)
+      .select('id, full_name, company, role_title, linkedin_url, expertise_tags, bio, is_active, slug, email, general_availability, preferred_format, opening_talk, semester_id, semesters(name)')
       .order('full_name')
-    setRows((data as MentorRow[]) ?? [])
+    type RawRow = Omit<MentorRow, 'semester_name'> & { semesters: { name: string } | { name: string }[] | null }
+    setRows(((data ?? []) as unknown as RawRow[]).map(m => ({
+      ...m,
+      semester_name: Array.isArray(m.semesters) ? (m.semesters[0]?.name ?? null) : (m.semesters?.name ?? null),
+    })))
     setLoading(false)
   }
 
@@ -141,12 +154,27 @@ export default function AdminMentorsPage() {
 
   function openEdit(m: MentorRow) {
     setEditingId(m.id)
+    setSaveError(null)
     setDraft({ full_name: m.full_name, company: m.company, role_title: m.role_title, linkedin_url: m.linkedin_url, bio: m.bio, expertise_tags: m.expertise_tags, email: m.email, general_availability: m.general_availability, preferred_format: m.preferred_format, opening_talk: m.opening_talk })
+  }
+
+  async function callUpdateApi(mentorId: string, fields: Record<string, unknown>): Promise<string | null> {
+    const { data: { session } } = await supabase.auth.getSession()
+    const token = session?.access_token
+    if (!token) return 'Not authenticated.'
+    const res = await fetch('/api/admin/mentors/update', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ mentorId, ...fields }),
+    })
+    const json = await res.json()
+    return res.ok ? null : (json.error ?? 'Something went wrong.')
   }
 
   async function saveMentor(id: string) {
     setSavingId(id)
-    await supabase.from('mentors').update({
+    setSaveError(null)
+    const err = await callUpdateApi(id, {
       full_name: draft.full_name?.trim(),
       company: draft.company?.trim() || null,
       role_title: draft.role_title?.trim() || null,
@@ -157,16 +185,22 @@ export default function AdminMentorsPage() {
       general_availability: draft.general_availability?.trim() || null,
       preferred_format: draft.preferred_format || null,
       opening_talk: draft.opening_talk?.trim() || null,
-    } as never).eq('id', id)
-    setRows(prev => prev.map(r => r.id === id ? { ...r, ...draft as MentorRow } : r))
-    setEditingId(null)
+    })
+    if (err) {
+      setSaveError(err)
+    } else {
+      await load()
+      setEditingId(null)
+    }
     setSavingId(null)
   }
 
   async function toggleActive(id: string, current: boolean) {
     setTogglingId(id)
-    await supabase.from('mentors').update({ is_active: !current } as never).eq('id', id)
-    setRows(prev => prev.map(r => r.id === id ? { ...r, is_active: !current } : r))
+    const err = await callUpdateApi(id, { is_active: !current })
+    if (!err) {
+      setRows(prev => prev.map(r => r.id === id ? { ...r, is_active: !current } : r))
+    }
     setTogglingId(null)
   }
 
@@ -310,15 +344,18 @@ export default function AdminMentorsPage() {
         <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
           <table className="w-full text-sm table-fixed border-collapse">
             <colgroup>
-              <col style={{ width: '28%' }} />
-              <col style={{ width: '22%' }} />
-              <col style={{ width: '12%' }} />
-              <col style={{ width: '30%' }} />
-              <col style={{ width: '8%' }} />
+              <col style={{ width: '21%' }} />
+              <col style={{ width: '16%' }} />
+              <col style={{ width: '9%' }} />
+              <col style={{ width: '9%' }} />
+              <col style={{ width: '9%' }} />
+              <col style={{ width: '16%' }} />
+              <col style={{ width: '16%' }} />
+              <col style={{ width: '4%' }} />
             </colgroup>
             <thead className="border-b border-gray-100 bg-gray-50">
               <tr>
-                {([['full_name', 'Name'], ['company', 'Company'], ['is_active', 'Status']] as const).map(([k, label]) => (
+                {([['full_name', 'Name'], ['company', 'Company'], ['is_active', 'Status'], ['semester_name', 'Semester']] as const).map(([k, label]) => (
                   <th key={k} className="px-4 py-3 text-left font-normal">
                     <button onClick={() => handleSort(k)}
                       className="flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide hover:text-[#002147] transition-colors">
@@ -329,6 +366,8 @@ export default function AdminMentorsPage() {
                     </button>
                   </th>
                 ))}
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">LinkedIn</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Email</th>
                 <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Tags</th>
                 <th className="px-4 py-3" />
               </tr>
@@ -346,17 +385,50 @@ export default function AdminMentorsPage() {
                       ) : (
                         <p className="text-sm font-medium text-[#002147] truncate">{m.full_name}</p>
                       )}
-                      {m.email && <p className="text-xs text-gray-400 truncate">{m.email}</p>}
+                      {m.role_title && <p className="text-xs text-gray-400 truncate">{m.role_title}</p>}
                     </td>
                     <td className="px-4 py-3">
                       <p className="text-sm text-gray-700 truncate">{m.company ?? '—'}</p>
-                      {m.role_title && <p className="text-xs text-gray-400 truncate">{m.role_title}</p>}
                     </td>
                     <td className="px-4 py-3">
                       <button onClick={() => toggleActive(m.id, m.is_active)} disabled={togglingId === m.id}
                         className={`text-xs font-semibold px-2.5 py-1 rounded-full transition-colors disabled:opacity-50 ${m.is_active ? 'text-green-600 bg-green-50 hover:bg-green-100' : 'text-gray-400 bg-gray-100 hover:bg-gray-200'}`}>
                         {togglingId === m.id ? '…' : m.is_active ? 'Active' : 'Inactive'}
                       </button>
+                    </td>
+                    <td className="px-4 py-3">
+                      {m.semester_name
+                        ? <span className="text-[11px] font-semibold bg-[#75AADB]/20 text-[#002147] px-2 py-0.5 rounded-full whitespace-nowrap">{m.semester_name}</span>
+                        : <span className="text-gray-300 text-xs">—</span>
+                      }
+                    </td>
+                    <td className="px-4 py-3">
+                      {m.linkedin_url ? (
+                        <button
+                          onClick={() => copyToClipboard(m.linkedin_url!, `li-${m.id}`)}
+                          title={m.linkedin_url}
+                          className="flex items-center gap-1 text-[11px] text-blue-600 hover:text-blue-800 font-medium"
+                        >
+                          <svg className="w-3 h-3 shrink-0" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M19 0h-14c-2.76 0-5 2.24-5 5v14c0 2.76 2.24 5 5 5h14c2.76 0 5-2.24 5-5v-14c0-2.76-2.24-5-5-5zm-11 19h-3v-10h3v10zm-1.5-11.27c-.97 0-1.75-.79-1.75-1.76s.78-1.76 1.75-1.76 1.75.79 1.75 1.76-.78 1.76-1.75 1.76zm13.5 11.27h-3v-5.6c0-1.34-.03-3.07-1.87-3.07-1.87 0-2.16 1.46-2.16 2.97v5.7h-3v-10h2.88v1.36h.04c.4-.76 1.38-1.56 2.84-1.56 3.04 0 3.6 2 3.6 4.59v5.61z" />
+                          </svg>
+                          {copiedId === `li-${m.id}` ? <span className="text-green-600">Copied!</span> : 'LinkedIn'}
+                        </button>
+                      ) : <span className="text-gray-300 text-xs">—</span>}
+                    </td>
+                    <td className="px-4 py-3 overflow-hidden">
+                      {m.email ? (
+                        <button
+                          onClick={() => copyToClipboard(m.email!, `em-${m.id}`)}
+                          title={m.email}
+                          className="flex items-center gap-1 text-[11px] text-gray-600 hover:text-[#002147] font-medium w-full overflow-hidden"
+                        >
+                          <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                          </svg>
+                          {copiedId === `em-${m.id}` ? <span className="text-green-600 shrink-0">Copied!</span> : <span className="truncate">{m.email}</span>}
+                        </button>
+                      ) : <span className="text-gray-300 text-xs">—</span>}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap gap-1">
@@ -368,16 +440,27 @@ export default function AdminMentorsPage() {
                         )}
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-right">
-                      <button onClick={() => editingId === m.id ? setEditingId(null) : openEdit(m)}
-                        className="text-xs font-medium text-gray-500 hover:text-[#002147] px-2 py-1 rounded hover:bg-gray-100 transition-colors">
-                        {editingId === m.id ? 'Cancel' : 'Edit'}
+                    <td className="px-4 py-3 text-center">
+                      <button
+                        onClick={() => editingId === m.id ? setEditingId(null) : openEdit(m)}
+                        title={editingId === m.id ? 'Cancel' : 'Edit'}
+                        className="inline-flex items-center justify-center w-7 h-7 rounded-md text-gray-400 hover:text-[#002147] hover:bg-gray-100 transition-colors"
+                      >
+                        {editingId === m.id ? (
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        ) : (
+                          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536M9 13l6.586-6.586a2 2 0 012.828 2.828L11.828 15.828a2 2 0 01-1.414.586H8v-2.414a2 2 0 01.586-1.414z" />
+                          </svg>
+                        )}
                       </button>
                     </td>
                   </tr>
                   {editingId === m.id && (
                     <tr>
-                      <td colSpan={5} className="p-0">
+                      <td colSpan={8} className="p-0">
                         <div className="bg-gray-50/80 border-t border-gray-100 px-5 py-4 space-y-3">
                           <div className="grid sm:grid-cols-2 gap-3">
                             {([
@@ -421,12 +504,15 @@ export default function AdminMentorsPage() {
                                 className="w-full text-sm text-gray-800 border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40 resize-none" />
                             </div>
                           </div>
+                          {saveError && editingId === m.id && (
+                            <p className="text-xs text-red-500">{saveError}</p>
+                          )}
                           <div className="flex items-center gap-2 pt-1">
                             <button onClick={() => saveMentor(m.id)} disabled={savingId === m.id}
                               className="px-4 py-2 bg-[#002147] text-white text-sm font-medium rounded-lg hover:bg-[#002147]/90 disabled:opacity-50 transition-colors">
                               {savingId === m.id ? 'Saving…' : 'Save'}
                             </button>
-                            <button onClick={() => setEditingId(null)}
+                            <button onClick={() => { setEditingId(null); setSaveError(null) }}
                               className="px-4 py-2 text-sm font-medium text-gray-500 hover:bg-gray-100 rounded-lg transition-colors">
                               Cancel
                             </button>

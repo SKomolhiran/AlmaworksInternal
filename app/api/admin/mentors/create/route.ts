@@ -1,6 +1,15 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 
+function generateSlug(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+}
+
 type CreateMentorPayload = {
   semesterId: string
   email: string
@@ -92,6 +101,21 @@ export async function POST(req: Request) {
 
     let mentorId = existing.data?.id ?? null
     if (!mentorId) {
+      // Generate a unique slug from the mentor's name
+      const baseSlug = generateSlug(fullName)
+      let slug = baseSlug
+      let suffix = 1
+      while (true) {
+        const { data: taken } = await adminClient
+          .from('mentors')
+          .select('id')
+          .eq('slug', slug)
+          .maybeSingle()
+        if (!taken) break
+        suffix++
+        slug = `${baseSlug}-${suffix}`
+      }
+
       const insertRes = await adminClient
         .from('mentors')
         .insert({
@@ -104,6 +128,7 @@ export async function POST(req: Request) {
           expertise_tags: payload.expertiseTags ?? [],
           bio: payload.bio,
           is_active: payload.isActive,
+          slug,
         })
         .select('id')
         .single()

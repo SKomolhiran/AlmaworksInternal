@@ -11,8 +11,11 @@ type OutreachRow = {
   company: string | null
   linkedin_url: string | null
   expertise_tags: string[]
+  outreach_type: string[]
   notes: string | null
   status: 'prospect' | 'contacted' | 'responded' | 'onboarded'
+  last_contacted_at: string | null
+  who_reached_out: string | null
   converted_mentor_id: string | null
   created_at: string
 }
@@ -23,6 +26,8 @@ const STATUS_COLORS: Record<string, string> = {
   responded: 'bg-amber-50 text-amber-600',
   onboarded: 'bg-green-50 text-green-600',
 }
+
+const OUTREACH_TYPE_SUGGESTIONS = ['Sponsorship', 'Partnership', 'Mentor', 'Investor', 'Speaker', 'Advisor']
 
 export default function AdminOutreachPage() {
   const supabase = useMemo(() => createClient(), [])
@@ -35,6 +40,15 @@ export default function AdminOutreachPage() {
   const [recentMagicLinks, setRecentMagicLinks] = useState<{ label: string; link: string }[]>([])
   const [magicLinkByRow, setMagicLinkByRow] = useState<Record<string, string>>({})
 
+  // Clipboard copy feedback
+  const [copiedId, setCopiedId] = useState<string | null>(null)
+  function copyToClipboard(text: string, id: string) {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopiedId(id)
+      setTimeout(() => setCopiedId(null), 1500)
+    })
+  }
+
   // Add form
   const [showAdd, setShowAdd] = useState(false)
   const [aoName, setAoName] = useState('')
@@ -42,8 +56,10 @@ export default function AdminOutreachPage() {
   const [aoCompany, setAoCompany] = useState('')
   const [aoLinkedin, setAoLinkedin] = useState('')
   const [aoTagsArr, setAoTagsArr] = useState<string[]>([])
+  const [aoOutreachType, setAoOutreachType] = useState<string[]>([])
   const [aoNotes, setAoNotes] = useState('')
   const [aoStatus, setAoStatus] = useState<OutreachRow['status']>('prospect')
+  const [aoWhoReachedOut, setAoWhoReachedOut] = useState('')
   const [aoLoading, setAoLoading] = useState(false)
   const [aoError, setAoError] = useState<string | null>(null)
 
@@ -54,7 +70,7 @@ export default function AdminOutreachPage() {
 
   // Inline edit
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [editDraft, setEditDraft] = useState<Partial<OutreachRow & { expertise_tags_arr: string[] }>>({})
+  const [editDraft, setEditDraft] = useState<Partial<OutreachRow & { expertise_tags_arr: string[]; outreach_type_arr: string[] }>>({})
   const [savingId, setSavingId] = useState<string | null>(null)
 
   // Convert to mentor
@@ -66,12 +82,14 @@ export default function AdminOutreachPage() {
     const [{ data: userData }, { data: sem }, { data: outreach }] = await Promise.all([
       supabase.auth.getUser(),
       supabase.from('semesters').select('id, name').eq('is_active', true).maybeSingle(),
-      supabase.from('outreach').select('id, prospect_name, prospect_email, company, linkedin_url, expertise_tags, notes, status, converted_mentor_id, created_at').order('created_at', { ascending: false }),
+      supabase.from('outreach')
+        .select('id, prospect_name, prospect_email, company, linkedin_url, expertise_tags, outreach_type, notes, status, last_contacted_at, who_reached_out, converted_mentor_id, created_at')
+        .order('created_at', { ascending: false }),
     ])
     setAdminId(userData.user?.id ?? null)
     setActiveSemesterId((sem as { id: string; name: string } | null)?.id ?? null)
     setActiveSemesterName((sem as { id: string; name: string } | null)?.name ?? null)
-    const all = (outreach as OutreachRow[]) ?? []
+    const all = (outreach as unknown as OutreachRow[]) ?? []
     setRows(all)
     setConvertEmail(prev => {
       const next = { ...prev }
@@ -94,7 +112,11 @@ export default function AdminOutreachPage() {
       if (conversionFilter === 'converted' && !r.converted_mentor_id) return false
       if (conversionFilter === 'not_converted' && r.converted_mentor_id) return false
       if (!q) return true
-      return [r.prospect_name, r.prospect_email ?? '', r.company ?? '', r.notes ?? '', ...(r.expertise_tags ?? [])].join(' ').toLowerCase().includes(q)
+      return [
+        r.prospect_name, r.prospect_email ?? '', r.company ?? '',
+        r.notes ?? '', r.who_reached_out ?? '',
+        ...(r.expertise_tags ?? []), ...(r.outreach_type ?? []),
+      ].join(' ').toLowerCase().includes(q)
     })
   }, [rows, search, statusFilter, conversionFilter])
 
@@ -110,14 +132,17 @@ export default function AdminOutreachPage() {
       company: aoCompany.trim() || null,
       linkedin_url: aoLinkedin.trim() || null,
       expertise_tags: aoTagsArr,
+      outreach_type: aoOutreachType,
       status: aoStatus,
       notes: aoNotes.trim() || null,
-    } as never).select('id, prospect_name, prospect_email, company, linkedin_url, expertise_tags, notes, status, converted_mentor_id, created_at').single()
+      who_reached_out: aoWhoReachedOut.trim() || null,
+    } as never).select('id, prospect_name, prospect_email, company, linkedin_url, expertise_tags, outreach_type, notes, status, last_contacted_at, who_reached_out, converted_mentor_id, created_at').single()
     if (error) {
       setAoError(error.message)
     } else {
-      setAoName(''); setAoEmail(''); setAoCompany(''); setAoLinkedin(''); setAoTagsArr([]); setAoNotes(''); setAoStatus('prospect')
-      setRows(prev => [data as OutreachRow, ...prev])
+      setAoName(''); setAoEmail(''); setAoCompany(''); setAoLinkedin('')
+      setAoTagsArr([]); setAoOutreachType([]); setAoNotes(''); setAoStatus('prospect'); setAoWhoReachedOut('')
+      setRows(prev => [data as unknown as OutreachRow, ...prev])
       setShowAdd(false)
     }
     setAoLoading(false)
@@ -125,22 +150,42 @@ export default function AdminOutreachPage() {
 
   function openEdit(r: OutreachRow) {
     setEditingId(r.id)
-    setEditDraft({ prospect_name: r.prospect_name, prospect_email: r.prospect_email, company: r.company, linkedin_url: r.linkedin_url, notes: r.notes, status: r.status, expertise_tags_arr: r.expertise_tags ?? [] })
+    setSaveError(null)
+    setEditDraft({
+      prospect_name: r.prospect_name,
+      prospect_email: r.prospect_email,
+      company: r.company,
+      linkedin_url: r.linkedin_url,
+      notes: r.notes,
+      status: r.status,
+      last_contacted_at: r.last_contacted_at,
+      who_reached_out: r.who_reached_out,
+      expertise_tags_arr: r.expertise_tags ?? [],
+      outreach_type_arr: r.outreach_type ?? [],
+    })
   }
+
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   async function saveRow(id: string) {
     setSavingId(id)
+    setSaveError(null)
     const { error } = await supabase.from('outreach').update({
       prospect_name: editDraft.prospect_name?.trim(),
       prospect_email: editDraft.prospect_email?.trim() || null,
       company: editDraft.company?.trim() || null,
       linkedin_url: editDraft.linkedin_url?.trim() || null,
       expertise_tags: editDraft.expertise_tags_arr ?? [],
+      outreach_type: editDraft.outreach_type_arr ?? [],
       notes: editDraft.notes?.trim() || null,
       status: editDraft.status,
-    }).eq('id', id)
-    if (!error) {
-      setRows(prev => prev.map(r => r.id === id ? { ...r, ...editDraft as OutreachRow, expertise_tags: editDraft.expertise_tags_arr ?? r.expertise_tags } : r))
+      last_contacted_at: editDraft.last_contacted_at || null,
+      who_reached_out: editDraft.who_reached_out?.trim() || null,
+    } as never).eq('id', id)
+    if (error) {
+      setSaveError(error.message)
+    } else {
+      await load()
       setEditingId(null)
     }
     setSavingId(null)
@@ -180,7 +225,7 @@ export default function AdminOutreachPage() {
   }
 
   return (
-    <div className="max-w-4xl">
+    <div className="max-w-5xl">
       {/* Page header */}
       <div className="flex items-start justify-between gap-4 mb-6">
         <div>
@@ -201,7 +246,7 @@ export default function AdminOutreachPage() {
         </button>
       </div>
 
-      {/* Magic links */}
+      {/* Recent magic links */}
       {recentMagicLinks.length > 0 && (
         <div className="bg-green-50 border border-green-100 rounded-xl p-4 mb-4 space-y-2">
           <p className="text-xs font-semibold text-green-800 uppercase tracking-wide">Recent magic links</p>
@@ -253,12 +298,22 @@ export default function AdminOutreachPage() {
                 <option value="onboarded">Onboarded</option>
               </select>
             </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Who reached out</label>
+              <input value={aoWhoReachedOut} onChange={e => setAoWhoReachedOut(e.target.value)} placeholder="Your name"
+                className="w-full text-sm text-gray-800 placeholder:text-gray-400 border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40" />
+            </div>
+            <div className="sm:col-span-2">
+              <label className="block text-xs font-medium text-gray-600 mb-1">Outreach type tags</label>
+              <TagInput value={aoOutreachType} onChange={setAoOutreachType}
+                suggestions={OUTREACH_TYPE_SUGGESTIONS} placeholder="Add types…" />
+            </div>
             <div className="sm:col-span-2">
               <label className="block text-xs font-medium text-gray-600 mb-1">Expertise tags</label>
               <TagInput value={aoTagsArr} onChange={setAoTagsArr} suggestions={allTagSuggestions} placeholder="Search or create tags…" />
             </div>
             <div className="sm:col-span-2">
-              <label className="block text-xs font-medium text-gray-600 mb-1">Notes</label>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Description / Notes</label>
               <textarea rows={2} value={aoNotes} onChange={e => setAoNotes(e.target.value)} placeholder="Any notes…"
                 className="w-full text-sm text-gray-800 placeholder:text-gray-400 border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40 resize-none" />
             </div>
@@ -279,7 +334,7 @@ export default function AdminOutreachPage() {
 
       {/* Toolbar */}
       <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-4">
-        <input type="search" placeholder="Search name, email, company, notes…"
+        <input type="search" placeholder="Search name, email, company, notes, type…"
           value={search} onChange={e => setSearch(e.target.value)}
           className="flex-1 text-sm text-gray-800 placeholder:text-gray-400 border border-gray-300 rounded-xl px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40" />
         <div className="flex gap-1 bg-gray-100 rounded-xl p-1 shrink-0 flex-wrap">
@@ -312,27 +367,65 @@ export default function AdminOutreachPage() {
             <div key={r.id}>
               {/* Row */}
               <div className="flex items-start gap-4 px-5 py-4 hover:bg-gray-50/60 transition-colors">
-                <div className="flex-1 min-w-0 grid sm:grid-cols-3 gap-x-4 gap-y-1.5">
-                  {/* Name / email / company */}
+                <div className="flex-1 min-w-0 grid sm:grid-cols-4 gap-x-4 gap-y-1.5">
+                  {/* Col 1: Name / contact info */}
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-[#002147] truncate">{r.prospect_name}</p>
-                    {r.prospect_email && <p className="text-xs text-gray-500 truncate">{r.prospect_email}</p>}
                     {r.company && <p className="text-xs text-gray-400 truncate">{r.company}</p>}
+                    {r.prospect_email && (
+                      <button
+                        onClick={() => copyToClipboard(r.prospect_email!, `em-${r.id}`)}
+                        title={r.prospect_email}
+                        className="flex items-center gap-1 text-[11px] text-gray-500 hover:text-[#002147] mt-0.5 max-w-full"
+                      >
+                        <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                        </svg>
+                        {copiedId === `em-${r.id}` ? <span className="text-green-600 font-medium">Copied!</span> : <span className="truncate">{r.prospect_email}</span>}
+                      </button>
+                    )}
+                    {r.linkedin_url && (
+                      <button
+                        onClick={() => copyToClipboard(r.linkedin_url!, `li-${r.id}`)}
+                        title={r.linkedin_url}
+                        className="flex items-center gap-1 text-[11px] text-blue-600 hover:text-blue-800 mt-0.5"
+                      >
+                        <svg className="w-3 h-3 shrink-0" fill="currentColor" viewBox="0 0 24 24">
+                          <path d="M19 0h-14c-2.76 0-5 2.24-5 5v14c0 2.76 2.24 5 5 5h14c2.76 0 5-2.24 5-5v-14c0-2.76-2.24-5-5-5zm-11 19h-3v-10h3v10zm-1.5-11.27c-.97 0-1.75-.79-1.75-1.76s.78-1.76 1.75-1.76 1.75.79 1.75 1.76-.78 1.76-1.75 1.76zm13.5 11.27h-3v-5.6c0-1.34-.03-3.07-1.87-3.07-1.87 0-2.16 1.46-2.16 2.97v5.7h-3v-10h2.88v1.36h.04c.4-.76 1.38-1.56 2.84-1.56 3.04 0 3.6 2 3.6 4.59v5.61z"/>
+                        </svg>
+                        {copiedId === `li-${r.id}` ? <span className="text-green-600 font-medium">Copied!</span> : 'LinkedIn'}
+                      </button>
+                    )}
                   </div>
-                  {/* Tags */}
+                  {/* Col 2: Tags */}
                   <div className="flex flex-wrap gap-1 content-start">
+                    {(r.outreach_type ?? []).map(t => (
+                      <span key={t} className="text-[10px] bg-amber-50 text-amber-700 px-2 py-0.5 rounded-full font-semibold">{t}</span>
+                    ))}
                     {(r.expertise_tags ?? []).map(t => (
                       <span key={t} className="text-[10px] bg-[#002147]/8 text-[#002147] px-2 py-0.5 rounded-full font-medium">{t}</span>
                     ))}
                   </div>
-                  {/* Status + converted */}
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className={`text-[10px] font-semibold px-2.5 py-1 rounded-full capitalize ${STATUS_COLORS[r.status] ?? 'bg-gray-100 text-gray-500'}`}>
-                      {r.status}
-                    </span>
-                    {r.converted_mentor_id && (
-                      <span className="text-[10px] font-semibold px-2.5 py-1 rounded-full bg-green-50 text-green-700">Converted</span>
+                  {/* Col 3: Status / contact history */}
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={`text-[10px] font-semibold px-2.5 py-1 rounded-full capitalize ${STATUS_COLORS[r.status] ?? 'bg-gray-100 text-gray-500'}`}>
+                        {r.status}
+                      </span>
+                      {r.converted_mentor_id && (
+                        <span className="text-[10px] font-semibold px-2.5 py-1 rounded-full bg-green-50 text-green-700">Converted</span>
+                      )}
+                    </div>
+                    {r.last_contacted_at && (
+                      <p className="text-xs text-gray-400 mt-1">Last: {new Date(r.last_contacted_at).toLocaleDateString()}</p>
                     )}
+                    {r.who_reached_out && (
+                      <p className="text-xs text-gray-400 mt-0.5">By: {r.who_reached_out}</p>
+                    )}
+                  </div>
+                  {/* Col 4: Notes */}
+                  <div>
+                    {r.notes && <p className="text-xs text-gray-500 line-clamp-3 leading-relaxed">{r.notes}</p>}
                   </div>
                 </div>
                 <button onClick={() => editingId === r.id ? setEditingId(null) : openEdit(r)}
@@ -344,20 +437,31 @@ export default function AdminOutreachPage() {
               {/* Inline edit */}
               {editingId === r.id && (
                 <div className="bg-gray-50/80 border-t border-gray-100 px-5 py-4 space-y-4">
-                  <div className="grid sm:grid-cols-2 gap-3">
-                    {([
-                      ['Name', 'prospect_name', 'text', 'Jane Smith'],
-                      ['Email', 'prospect_email', 'email', 'jane@example.com'],
-                      ['Company', 'company', 'text', 'Acme Inc.'],
-                      ['LinkedIn URL', 'linkedin_url', 'url', 'https://linkedin.com/in/…'],
-                    ] as const).map(([label, key, type, ph]) => (
-                      <div key={key}>
-                        <label className="block text-xs font-medium text-gray-600 mb-1">{label}</label>
-                        <input type={type} value={(editDraft[key] as string) ?? ''} placeholder={ph}
-                          onChange={e => setEditDraft(p => ({ ...p, [key]: e.target.value }))}
-                          className="w-full text-sm text-gray-800 placeholder:text-gray-400 border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40" />
-                      </div>
-                    ))}
+                  <div className="grid sm:grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Name</label>
+                      <input value={editDraft.prospect_name ?? ''} placeholder="Jane Smith"
+                        onChange={e => setEditDraft(p => ({ ...p, prospect_name: e.target.value }))}
+                        className="w-full text-sm text-gray-800 placeholder:text-gray-400 border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Email</label>
+                      <input type="email" value={editDraft.prospect_email ?? ''} placeholder="jane@example.com"
+                        onChange={e => setEditDraft(p => ({ ...p, prospect_email: e.target.value || null }))}
+                        className="w-full text-sm text-gray-800 placeholder:text-gray-400 border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Company</label>
+                      <input value={editDraft.company ?? ''} placeholder="Acme Inc."
+                        onChange={e => setEditDraft(p => ({ ...p, company: e.target.value || null }))}
+                        className="w-full text-sm text-gray-800 placeholder:text-gray-400 border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">LinkedIn URL</label>
+                      <input value={editDraft.linkedin_url ?? ''} placeholder="https://linkedin.com/in/…"
+                        onChange={e => setEditDraft(p => ({ ...p, linkedin_url: e.target.value || null }))}
+                        className="w-full text-sm text-gray-800 placeholder:text-gray-400 border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40" />
+                    </div>
                     <div>
                       <label className="block text-xs font-medium text-gray-600 mb-1">Status</label>
                       <select value={editDraft.status ?? r.status} onChange={e => setEditDraft(p => ({ ...p, status: e.target.value as OutreachRow['status'] }))}
@@ -368,24 +472,52 @@ export default function AdminOutreachPage() {
                         <option value="onboarded">Onboarded</option>
                       </select>
                     </div>
-                    <div className="sm:col-span-2">
-                      <label className="block text-xs font-medium text-gray-600 mb-1">Expertise tags</label>
-                      <TagInput value={editDraft.expertise_tags_arr ?? []} onChange={tags => setEditDraft(p => ({ ...p, expertise_tags_arr: tags }))}
-                        suggestions={allTagSuggestions} placeholder="Search or create tags…" />
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Last contacted</label>
+                      <input type="date" value={editDraft.last_contacted_at?.slice(0, 10) ?? ''}
+                        onChange={e => setEditDraft(p => ({ ...p, last_contacted_at: e.target.value || null }))}
+                        className="w-full text-sm text-gray-800 border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Who reached out</label>
+                      <input value={editDraft.who_reached_out ?? ''} placeholder="Name of person"
+                        onChange={e => setEditDraft(p => ({ ...p, who_reached_out: e.target.value || null }))}
+                        className="w-full text-sm text-gray-800 placeholder:text-gray-400 border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40" />
                     </div>
                     <div className="sm:col-span-2">
-                      <label className="block text-xs font-medium text-gray-600 mb-1">Notes</label>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Outreach type tags</label>
+                      <TagInput
+                        value={editDraft.outreach_type_arr ?? []}
+                        onChange={tags => setEditDraft(p => ({ ...p, outreach_type_arr: tags }))}
+                        suggestions={OUTREACH_TYPE_SUGGESTIONS}
+                        placeholder="Add types…"
+                      />
+                    </div>
+                    <div className="sm:col-span-3">
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Expertise tags</label>
+                      <TagInput
+                        value={editDraft.expertise_tags_arr ?? []}
+                        onChange={tags => setEditDraft(p => ({ ...p, expertise_tags_arr: tags }))}
+                        suggestions={allTagSuggestions}
+                        placeholder="Search or create tags…"
+                      />
+                    </div>
+                    <div className="sm:col-span-3">
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Description / Notes</label>
                       <textarea rows={2} value={editDraft.notes ?? ''}
                         onChange={e => setEditDraft(p => ({ ...p, notes: e.target.value }))}
                         className="w-full text-sm text-gray-800 border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40 resize-none" />
                     </div>
                   </div>
+                  {saveError && editingId === r.id && (
+                    <p className="text-xs text-red-500 mb-2">{saveError}</p>
+                  )}
                   <div className="flex items-center gap-2">
                     <button onClick={() => saveRow(r.id)} disabled={savingId === r.id}
                       className="px-4 py-2 bg-[#002147] text-white text-sm font-medium rounded-lg hover:bg-[#002147]/90 disabled:opacity-50 transition-colors">
                       {savingId === r.id ? 'Saving…' : 'Save'}
                     </button>
-                    <button onClick={() => setEditingId(null)}
+                    <button onClick={() => { setEditingId(null); setSaveError(null) }}
                       className="px-4 py-2 text-sm font-medium text-gray-500 hover:bg-gray-100 rounded-lg transition-colors">
                       Cancel
                     </button>
