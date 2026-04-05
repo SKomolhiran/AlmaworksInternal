@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:www.alma.works)",
+      "Bash(npm uninstall:*)",
+      "Bash(npm install:*)",
+      "mcp__claude_ai_Supabase__get_project_url",
+      "mcp__claude_ai_Supabase__execute_sql",
+      "mcp__claude_ai_Supabase__apply_migration",
+      "Bash(unzip -o \"ExportBlock-fdb87517-c647-438a-a0ce-b363d926a503-Part-1.zip\" -d ./extracted)",
+      "mcp__claude_ai_Supabase__list_projects",
+      "mcp__claude_ai_Supabase__list_tables",
+      "mcp__claude_ai_Supabase__get_logs",
+      "mcp__claude_ai_Supabase__get_advisors",
+      "Bash(npm run:*)",
+      "Bash(ls:*)",
+      "Bash(npx tsc:*)",
+      "Bash(python3:*)"
+    ]
+  }
+}
