@@ -3,6 +3,7 @@
 import { createClient } from '@/utils/supabase/client'
 import { useEffect, useMemo, useState } from 'react'
 import TagInput from '@/components/TagInput'
+import ActivityTimeline from '@/components/ActivityTimeline'
 
 type OutreachRow = {
   id: string
@@ -18,6 +19,8 @@ type OutreachRow = {
   who_reached_out: string | null
   converted_mentor_id: string | null
   created_at: string
+  source_channel: string | null
+  referred_by: string | null
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -28,6 +31,13 @@ const STATUS_COLORS: Record<string, string> = {
 }
 
 const OUTREACH_TYPE_SUGGESTIONS = ['Sponsorship', 'Partnership', 'Mentor', 'Investor', 'Speaker', 'Advisor']
+const SOURCE_CHANNEL_OPTIONS = ['Referral', 'LinkedIn Cold', 'Event', 'Alumni Network', 'Inbound', 'Other']
+
+function isValidLinkedinUrl(url: string): boolean {
+  if (!url.trim()) return true // empty is fine
+  const u = url.trim().toLowerCase().replace(/^https?:\/\//i, '').replace(/^www\./i, '')
+  return u.includes('linkedin.com/in/')
+}
 
 export default function AdminOutreachPage() {
   const supabase = useMemo(() => createClient(), [])
@@ -60,13 +70,19 @@ export default function AdminOutreachPage() {
   const [aoNotes, setAoNotes] = useState('')
   const [aoStatus, setAoStatus] = useState<OutreachRow['status']>('prospect')
   const [aoWhoReachedOut, setAoWhoReachedOut] = useState('')
+  const [aoSourceChannel, setAoSourceChannel] = useState('')
+  const [aoReferredBy, setAoReferredBy] = useState('')
   const [aoLoading, setAoLoading] = useState(false)
   const [aoError, setAoError] = useState<string | null>(null)
 
-  // Filters
+  // Filters — clear selection when filters change so bulk actions don't affect invisible rows
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<'all' | OutreachRow['status']>('all')
   const [conversionFilter, setConversionFilter] = useState<'all' | 'converted' | 'not_converted'>('not_converted')
+
+  function setSearchAndClearSelection(v: string) { setSearch(v); setSelected(new Set()) }
+  function setStatusFilterAndClearSelection(v: 'all' | OutreachRow['status']) { setStatusFilter(v); setSelected(new Set()) }
+  function setConversionFilterAndClearSelection(v: typeof conversionFilter) { setConversionFilter(v); setSelected(new Set()) }
 
   // Inline edit
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -77,13 +93,18 @@ export default function AdminOutreachPage() {
   const [convertEmail, setConvertEmail] = useState<Record<string, string>>({})
   const [convertingId, setConvertingId] = useState<string | null>(null)
 
+  // Bulk selection
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [bulkStatus, setBulkStatus] = useState<OutreachRow['status']>('contacted')
+  const [bulkUpdating, setBulkUpdating] = useState(false)
+
   async function load() {
     setLoading(true)
     const [{ data: userData }, { data: sem }, { data: outreach }] = await Promise.all([
       supabase.auth.getUser(),
       supabase.from('semesters').select('id, name').eq('is_active', true).maybeSingle(),
       supabase.from('outreach')
-        .select('id, prospect_name, prospect_email, company, linkedin_url, expertise_tags, outreach_type, notes, status, last_contacted_at, who_reached_out, converted_mentor_id, created_at')
+        .select('id, prospect_name, prospect_email, company, linkedin_url, expertise_tags, outreach_type, notes, status, last_contacted_at, who_reached_out, converted_mentor_id, created_at, source_channel, referred_by')
         .order('created_at', { ascending: false }),
     ])
     setAdminId(userData.user?.id ?? null)
@@ -115,6 +136,7 @@ export default function AdminOutreachPage() {
       return [
         r.prospect_name, r.prospect_email ?? '', r.company ?? '',
         r.notes ?? '', r.who_reached_out ?? '',
+        r.source_channel ?? '', r.referred_by ?? '',
         ...(r.expertise_tags ?? []), ...(r.outreach_type ?? []),
       ].join(' ').toLowerCase().includes(q)
     })
@@ -123,6 +145,7 @@ export default function AdminOutreachPage() {
   async function addOutreach(e: React.FormEvent) {
     e.preventDefault()
     if (!activeSemesterId || !adminId) { setAoError('No active semester or not authenticated.'); return }
+    if (aoLinkedin.trim() && !isValidLinkedinUrl(aoLinkedin)) { setAoError('Invalid LinkedIn URL. Must contain linkedin.com/in/'); return }
     setAoLoading(true); setAoError(null)
     const { data, error } = await supabase.from('outreach').insert({
       admin_id: adminId,
@@ -136,12 +159,15 @@ export default function AdminOutreachPage() {
       status: aoStatus,
       notes: aoNotes.trim() || null,
       who_reached_out: aoWhoReachedOut.trim() || null,
-    } as never).select('id, prospect_name, prospect_email, company, linkedin_url, expertise_tags, outreach_type, notes, status, last_contacted_at, who_reached_out, converted_mentor_id, created_at').single()
+      source_channel: aoSourceChannel || null,
+      referred_by: aoReferredBy.trim() || null,
+    } as never).select('id, prospect_name, prospect_email, company, linkedin_url, expertise_tags, outreach_type, notes, status, last_contacted_at, who_reached_out, converted_mentor_id, created_at, source_channel, referred_by').single()
     if (error) {
       setAoError(error.message)
     } else {
       setAoName(''); setAoEmail(''); setAoCompany(''); setAoLinkedin('')
       setAoTagsArr([]); setAoOutreachType([]); setAoNotes(''); setAoStatus('prospect'); setAoWhoReachedOut('')
+      setAoSourceChannel(''); setAoReferredBy('')
       setRows(prev => [data as unknown as OutreachRow, ...prev])
       setShowAdd(false)
     }
@@ -162,28 +188,50 @@ export default function AdminOutreachPage() {
       who_reached_out: r.who_reached_out,
       expertise_tags_arr: r.expertise_tags ?? [],
       outreach_type_arr: r.outreach_type ?? [],
+      source_channel: r.source_channel,
+      referred_by: r.referred_by,
     })
   }
 
   const [saveError, setSaveError] = useState<string | null>(null)
 
   async function saveRow(id: string) {
+    if (!activeSemesterId) return
+    if (editDraft.linkedin_url && !isValidLinkedinUrl(editDraft.linkedin_url)) {
+      setSaveError('Invalid LinkedIn URL. Must contain linkedin.com/in/')
+      return
+    }
     setSavingId(id)
     setSaveError(null)
-    const { error } = await supabase.from('outreach').update({
-      prospect_name: editDraft.prospect_name?.trim(),
-      prospect_email: editDraft.prospect_email?.trim() || null,
-      company: editDraft.company?.trim() || null,
-      linkedin_url: editDraft.linkedin_url?.trim() || null,
-      expertise_tags: editDraft.expertise_tags_arr ?? [],
-      outreach_type: editDraft.outreach_type_arr ?? [],
-      notes: editDraft.notes?.trim() || null,
-      status: editDraft.status,
-      last_contacted_at: editDraft.last_contacted_at || null,
-      who_reached_out: editDraft.who_reached_out?.trim() || null,
-    } as never).eq('id', id)
-    if (error) {
-      setSaveError(error.message)
+    const { data: { session } } = await supabase.auth.getSession()
+    const token = session?.access_token
+    if (!token) { setSavingId(null); return }
+
+    const res = await fetch('/api/admin/outreach/update', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        outreachId: id,
+        semesterId: activeSemesterId,
+        fields: {
+          prospect_name: editDraft.prospect_name?.trim(),
+          prospect_email: editDraft.prospect_email?.trim() || null,
+          company: editDraft.company?.trim() || null,
+          linkedin_url: editDraft.linkedin_url?.trim() || null,
+          expertise_tags: editDraft.expertise_tags_arr ?? [],
+          outreach_type: editDraft.outreach_type_arr ?? [],
+          notes: editDraft.notes?.trim() || null,
+          status: editDraft.status,
+          last_contacted_at: editDraft.last_contacted_at || null,
+          who_reached_out: editDraft.who_reached_out?.trim() || null,
+          source_channel: editDraft.source_channel || null,
+          referred_by: editDraft.referred_by?.trim() || null,
+        },
+      }),
+    })
+    const json = await res.json()
+    if (!res.ok) {
+      setSaveError(json.error ?? 'Failed to save.')
     } else {
       await load()
       setEditingId(null)
@@ -222,6 +270,51 @@ export default function AdminOutreachPage() {
       await load()
     }
     setConvertingId(null)
+  }
+
+  function toggleOne(id: string) {
+    setSelected(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
+  function toggleAll() {
+    if (selected.size === filtered.length) {
+      setSelected(new Set())
+    } else {
+      setSelected(new Set(filtered.map(r => r.id)))
+    }
+  }
+
+  async function bulkUpdateStatus() {
+    if (!activeSemesterId || selected.size === 0) return
+    setBulkUpdating(true)
+    const { data: { session } } = await supabase.auth.getSession()
+    const token = session?.access_token
+    if (!token) { setBulkUpdating(false); return }
+
+    // Optimistic update
+    const prevRows = [...rows]
+    setRows(prev => prev.map(r => selected.has(r.id) ? { ...r, status: bulkStatus } : r))
+
+    const res = await fetch('/api/admin/outreach/bulk-status', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        ids: [...selected],
+        status: bulkStatus,
+        semesterId: activeSemesterId,
+      }),
+    })
+    if (res.ok) {
+      setSelected(new Set())
+      await load()
+    } else {
+      setRows(prevRows) // revert on error
+    }
+    setBulkUpdating(false)
   }
 
   return (
@@ -286,7 +379,12 @@ export default function AdminOutreachPage() {
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">LinkedIn URL</label>
               <input value={aoLinkedin} onChange={e => setAoLinkedin(e.target.value)} placeholder="https://linkedin.com/in/…"
-                className="w-full text-sm text-gray-800 placeholder:text-gray-400 border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40" />
+                className={`w-full text-sm text-gray-800 placeholder:text-gray-400 border rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40 ${aoLinkedin.trim() && !isValidLinkedinUrl(aoLinkedin) ? 'border-red-300' : 'border-gray-300'}`} />
+              {aoLinkedin.trim() && (
+                isValidLinkedinUrl(aoLinkedin)
+                  ? <p className="text-[10px] text-green-600 mt-0.5 flex items-center gap-1"><svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7"/></svg>Valid LinkedIn profile</p>
+                  : <p className="text-[10px] text-red-500 mt-0.5">URL should contain linkedin.com/in/</p>
+              )}
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">Status</label>
@@ -303,6 +401,21 @@ export default function AdminOutreachPage() {
               <input value={aoWhoReachedOut} onChange={e => setAoWhoReachedOut(e.target.value)} placeholder="Your name"
                 className="w-full text-sm text-gray-800 placeholder:text-gray-400 border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40" />
             </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Source channel</label>
+              <select value={aoSourceChannel} onChange={e => setAoSourceChannel(e.target.value)}
+                className="w-full text-sm text-gray-800 border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40">
+                <option value="">— Select —</option>
+                {SOURCE_CHANNEL_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            {aoSourceChannel === 'Referral' && (
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1">Referred by</label>
+                <input value={aoReferredBy} onChange={e => setAoReferredBy(e.target.value)} placeholder="Referrer name"
+                  className="w-full text-sm text-gray-800 placeholder:text-gray-400 border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40" />
+              </div>
+            )}
             <div className="sm:col-span-2">
               <label className="block text-xs font-medium text-gray-600 mb-1">Outreach type tags</label>
               <TagInput value={aoOutreachType} onChange={setAoOutreachType}
@@ -334,18 +447,24 @@ export default function AdminOutreachPage() {
 
       {/* Toolbar */}
       <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-4">
+        <label className="flex items-center gap-1.5 shrink-0 cursor-pointer">
+          <input type="checkbox" checked={filtered.length > 0 && selected.size === filtered.length}
+            onChange={toggleAll}
+            className="w-4 h-4 rounded border-gray-300 text-[#002147] focus:ring-[#75AADB]/40" />
+          <span className="text-xs text-gray-500">All</span>
+        </label>
         <input type="search" placeholder="Search name, email, company, notes, type…"
-          value={search} onChange={e => setSearch(e.target.value)}
+          value={search} onChange={e => setSearchAndClearSelection(e.target.value)}
           className="flex-1 text-sm text-gray-800 placeholder:text-gray-400 border border-gray-300 rounded-xl px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40" />
         <div className="flex gap-1 bg-gray-100 rounded-xl p-1 shrink-0 flex-wrap">
           {(['all', 'prospect', 'contacted', 'responded', 'onboarded'] as const).map(s => (
-            <button key={s} onClick={() => setStatusFilter(s)}
+            <button key={s} onClick={() => setStatusFilterAndClearSelection(s)}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-colors ${statusFilter === s ? 'bg-white text-[#002147] shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
               {s}
             </button>
           ))}
         </div>
-        <select value={conversionFilter} onChange={e => setConversionFilter(e.target.value as typeof conversionFilter)}
+        <select value={conversionFilter} onChange={e => setConversionFilterAndClearSelection(e.target.value as typeof conversionFilter)}
           className="text-xs text-gray-600 border border-gray-300 rounded-xl px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40 shrink-0">
           <option value="all">All</option>
           <option value="not_converted">Not converted</option>
@@ -367,6 +486,8 @@ export default function AdminOutreachPage() {
             <div key={r.id}>
               {/* Row */}
               <div className="flex items-start gap-4 px-5 py-4 hover:bg-gray-50/60 transition-colors">
+                <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleOne(r.id)}
+                  className="w-4 h-4 mt-0.5 rounded border-gray-300 text-[#002147] focus:ring-[#75AADB]/40 shrink-0" />
                 <div className="flex-1 min-w-0 grid sm:grid-cols-4 gap-x-4 gap-y-1.5">
                   {/* Col 1: Name / contact info */}
                   <div className="min-w-0">
@@ -385,16 +506,30 @@ export default function AdminOutreachPage() {
                       </button>
                     )}
                     {r.linkedin_url && (
-                      <button
-                        onClick={() => copyToClipboard(r.linkedin_url!, `li-${r.id}`)}
-                        title={r.linkedin_url}
-                        className="flex items-center gap-1 text-[11px] text-blue-600 hover:text-blue-800 mt-0.5"
-                      >
-                        <svg className="w-3 h-3 shrink-0" fill="currentColor" viewBox="0 0 24 24">
-                          <path d="M19 0h-14c-2.76 0-5 2.24-5 5v14c0 2.76 2.24 5 5 5h14c2.76 0 5-2.24 5-5v-14c0-2.76-2.24-5-5-5zm-11 19h-3v-10h3v10zm-1.5-11.27c-.97 0-1.75-.79-1.75-1.76s.78-1.76 1.75-1.76 1.75.79 1.75 1.76-.78 1.76-1.75 1.76zm13.5 11.27h-3v-5.6c0-1.34-.03-3.07-1.87-3.07-1.87 0-2.16 1.46-2.16 2.97v5.7h-3v-10h2.88v1.36h.04c.4-.76 1.38-1.56 2.84-1.56 3.04 0 3.6 2 3.6 4.59v5.61z"/>
-                        </svg>
-                        {copiedId === `li-${r.id}` ? <span className="text-green-600 font-medium">Copied!</span> : 'LinkedIn'}
-                      </button>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <button
+                          onClick={() => copyToClipboard(r.linkedin_url!, `li-${r.id}`)}
+                          title={r.linkedin_url}
+                          className="flex items-center gap-1 text-[11px] text-blue-600 hover:text-blue-800"
+                        >
+                          <svg className="w-3 h-3 shrink-0" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M19 0h-14c-2.76 0-5 2.24-5 5v14c0 2.76 2.24 5 5 5h14c2.76 0 5-2.24 5-5v-14c0-2.76-2.24-5-5-5zm-11 19h-3v-10h3v10zm-1.5-11.27c-.97 0-1.75-.79-1.75-1.76s.78-1.76 1.75-1.76 1.75.79 1.75 1.76-.78 1.76-1.75 1.76zm13.5 11.27h-3v-5.6c0-1.34-.03-3.07-1.87-3.07-1.87 0-2.16 1.46-2.16 2.97v5.7h-3v-10h2.88v1.36h.04c.4-.76 1.38-1.56 2.84-1.56 3.04 0 3.6 2 3.6 4.59v5.61z"/>
+                          </svg>
+                          {copiedId === `li-${r.id}` ? <span className="text-green-600 font-medium">Copied!</span> : 'LinkedIn'}
+                        </button>
+                        <button
+                          onClick={() => {
+                            const href = r.linkedin_url!.startsWith('http') ? r.linkedin_url! : `https://${r.linkedin_url!}`
+                            window.open(href, '_blank')
+                          }}
+                          title="Open in new tab"
+                          className="text-[11px] text-blue-600 hover:text-blue-800"
+                        >
+                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                          </svg>
+                        </button>
+                      </div>
                     )}
                   </div>
                   {/* Col 2: Tags */}
@@ -421,6 +556,12 @@ export default function AdminOutreachPage() {
                     )}
                     {r.who_reached_out && (
                       <p className="text-xs text-gray-400 mt-0.5">By: {r.who_reached_out}</p>
+                    )}
+                    {r.source_channel && (
+                      <span className="inline-block text-[10px] font-medium px-2 py-0.5 rounded-full bg-purple-50 text-purple-600 mt-1">{r.source_channel}</span>
+                    )}
+                    {r.referred_by && (
+                      <p className="text-[10px] text-gray-400 mt-0.5">Ref: {r.referred_by}</p>
                     )}
                   </div>
                   {/* Col 4: Notes */}
@@ -460,7 +601,12 @@ export default function AdminOutreachPage() {
                       <label className="block text-xs font-medium text-gray-600 mb-1">LinkedIn URL</label>
                       <input value={editDraft.linkedin_url ?? ''} placeholder="https://linkedin.com/in/…"
                         onChange={e => setEditDraft(p => ({ ...p, linkedin_url: e.target.value || null }))}
-                        className="w-full text-sm text-gray-800 placeholder:text-gray-400 border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40" />
+                        className={`w-full text-sm text-gray-800 placeholder:text-gray-400 border rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40 ${editDraft.linkedin_url && !isValidLinkedinUrl(editDraft.linkedin_url) ? 'border-red-300' : 'border-gray-300'}`} />
+                      {editDraft.linkedin_url && (
+                        isValidLinkedinUrl(editDraft.linkedin_url)
+                          ? <p className="text-[10px] text-green-600 mt-0.5 flex items-center gap-1"><svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7"/></svg>Valid LinkedIn profile</p>
+                          : <p className="text-[10px] text-red-500 mt-0.5">URL should contain linkedin.com/in/</p>
+                      )}
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-gray-600 mb-1">Status</label>
@@ -484,6 +630,23 @@ export default function AdminOutreachPage() {
                         onChange={e => setEditDraft(p => ({ ...p, who_reached_out: e.target.value || null }))}
                         className="w-full text-sm text-gray-800 placeholder:text-gray-400 border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40" />
                     </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Source channel</label>
+                      <select value={editDraft.source_channel ?? ''}
+                        onChange={e => setEditDraft(p => ({ ...p, source_channel: e.target.value || null }))}
+                        className="w-full text-sm text-gray-800 border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40">
+                        <option value="">— Select —</option>
+                        {SOURCE_CHANNEL_OPTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                    </div>
+                    {editDraft.source_channel === 'Referral' && (
+                      <div>
+                        <label className="block text-xs font-medium text-gray-600 mb-1">Referred by</label>
+                        <input value={editDraft.referred_by ?? ''} placeholder="Referrer name"
+                          onChange={e => setEditDraft(p => ({ ...p, referred_by: e.target.value || null }))}
+                          className="w-full text-sm text-gray-800 placeholder:text-gray-400 border border-gray-300 rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40" />
+                      </div>
+                    )}
                     <div className="sm:col-span-2">
                       <label className="block text-xs font-medium text-gray-600 mb-1">Outreach type tags</label>
                       <TagInput
@@ -549,10 +712,39 @@ export default function AdminOutreachPage() {
                       )}
                     </div>
                   )}
+
+                  {/* Activity timeline */}
+                  {activeSemesterId && (
+                    <ActivityTimeline outreachId={r.id} semesterId={activeSemesterId} />
+                  )}
                 </div>
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Bulk action bar */}
+      {selected.size > 0 && (
+        <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 shadow-lg px-6 py-3 z-50">
+          <div className="max-w-5xl mx-auto flex items-center gap-4">
+            <span className="text-sm font-medium text-[#002147]">{selected.size} selected</span>
+            <select value={bulkStatus} onChange={e => setBulkStatus(e.target.value as OutreachRow['status'])}
+              className="text-sm text-gray-800 border border-gray-300 rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-[#75AADB]/40">
+              <option value="prospect">Prospect</option>
+              <option value="contacted">Contacted</option>
+              <option value="responded">Responded</option>
+              <option value="onboarded">Onboarded</option>
+            </select>
+            <button onClick={() => void bulkUpdateStatus()} disabled={bulkUpdating}
+              className="px-4 py-1.5 bg-[#002147] text-white text-sm font-medium rounded-lg hover:bg-[#002147]/90 disabled:opacity-50 transition-colors">
+              {bulkUpdating ? 'Updating...' : 'Update status'}
+            </button>
+            <button onClick={() => setSelected(new Set())}
+              className="px-4 py-1.5 text-sm font-medium text-gray-500 hover:bg-gray-100 rounded-lg transition-colors">
+              Clear selection
+            </button>
+          </div>
         </div>
       )}
     </div>

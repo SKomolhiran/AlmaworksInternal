@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import type { Database } from '@/src/db/types'
 
 type ConvertPayload = {
   outreachId: string
@@ -34,7 +35,7 @@ export async function POST(req: Request) {
     }
 
     // Verify caller is an authenticated admin (RLS-respecting check with user token).
-    const userClient = createClient(url, anonKey, {
+    const userClient = createClient<Database>(url, anonKey, {
       global: { headers: { Authorization: `Bearer ${accessToken}` } },
       auth: { persistSession: false, autoRefreshToken: false },
     })
@@ -56,7 +57,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Admin access required.' }, { status: 403 })
     }
 
-    const adminClient = createClient(url, serviceRoleKey, {
+    const adminClient = createClient<Database>(url, serviceRoleKey, {
       auth: { persistSession: false, autoRefreshToken: false },
     })
 
@@ -132,6 +133,18 @@ export async function POST(req: Request) {
       .eq('id', payload.outreachId)
     if (outreachUpdate.error) {
       return NextResponse.json({ error: outreachUpdate.error.message }, { status: 400 })
+    }
+
+    // Log conversion in activity timeline
+    const { error: activityErr } = await adminClient.from('outreach_activity_log').insert({
+      outreach_id: payload.outreachId,
+      semester_id: payload.semesterId,
+      admin_id: user.id,
+      action_type: 'converted',
+      detail: { mentor_id: mentorId },
+    })
+    if (activityErr) {
+      console.error('Failed to insert conversion activity log:', activityErr.message)
     }
 
     return NextResponse.json({

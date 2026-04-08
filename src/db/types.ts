@@ -160,7 +160,9 @@ export type Database = {
           notes: string | null
           prospect_email: string | null
           prospect_name: string
+          referred_by: string | null
           semester_id: string
+          source_channel: string | null
           status: Database["public"]["Enums"]["outreach_status"]
           updated_at: string
         }
@@ -176,7 +178,9 @@ export type Database = {
           notes?: string | null
           prospect_email?: string | null
           prospect_name: string
+          referred_by?: string | null
           semester_id: string
+          source_channel?: string | null
           status?: Database["public"]["Enums"]["outreach_status"]
           updated_at?: string
         }
@@ -192,7 +196,9 @@ export type Database = {
           notes?: string | null
           prospect_email?: string | null
           prospect_name?: string
+          referred_by?: string | null
           semester_id?: string
+          source_channel?: string | null
           status?: Database["public"]["Enums"]["outreach_status"]
           updated_at?: string
         }
@@ -216,6 +222,58 @@ export type Database = {
             columns: ["semester_id"]
             isOneToOne: false
             referencedRelation: "semesters"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      outreach_activity_log: {
+        Row: {
+          id: string
+          outreach_id: string
+          semester_id: string
+          admin_id: string
+          action_type: string
+          detail: Record<string, unknown>
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          outreach_id: string
+          semester_id: string
+          admin_id: string
+          action_type: string
+          detail?: Record<string, unknown>
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          outreach_id?: string
+          semester_id?: string
+          admin_id?: string
+          action_type?: string
+          detail?: Record<string, unknown>
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "outreach_activity_log_outreach_id_fkey"
+            columns: ["outreach_id"]
+            isOneToOne: false
+            referencedRelation: "outreach"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "outreach_activity_log_semester_id_fkey"
+            columns: ["semester_id"]
+            isOneToOne: false
+            referencedRelation: "semesters"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "outreach_activity_log_admin_id_fkey"
+            columns: ["admin_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
             referencedColumns: ["id"]
           },
         ]
